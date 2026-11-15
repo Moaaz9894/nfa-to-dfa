@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NFA to DFA Converter</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: input panel on the left, worked solution on the right; stacks on phones. */
+:root {
+  --bg: #f4f7f7;
+  --surface: #ffffff;
+  --surface-2: #e9f0ef;
+  --fg: #14201f;
+  --muted: #566866;
+  --line: #d3dedd;
+  --accent: #0b7a75;
+  --accent-fg: #ffffff;
+  --accent-soft: #d6eeec;
+  --good: #1b7f3b;
+  --good-soft: #dcf2e3;
+  --bad: #b3261e;
+  --bad-soft: #fbe4e2;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1514; --surface: #151e1d; --surface-2: #1c2827; --fg: #e4efed; --muted: #93a8a5;
+    --line: #2a3b39; --accent: #4cc9c0; --accent-fg: #06211f; --accent-soft: #163a37;
+    --good: #5fd18a; --good-soft: #15321f; --bad: #ff8a80; --bad-soft: #3a1c1a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1514; --surface: #151e1d; --surface-2: #1c2827; --fg: #e4efed; --muted: #93a8a5;
+  --line: #2a3b39; --accent: #4cc9c0; --accent-fg: #06211f; --accent-soft: #163a37;
+  --good: #5fd18a; --good-soft: #15321f; --bad: #ff8a80; --bad-soft: #3a1c1a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.55;
+  padding-block: 28px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1180px; margin: 0 auto; }
+h1 { font-size: 1.7rem; line-height: 1.2; margin: 0 0 4px; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { color: var(--muted); margin: 0 0 24px; max-width: 62ch; }
+.layout { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
+@media (min-width: 920px) { .layout { grid-template-columns: 340px minmax(0, 1fr); } .panel-in { position: sticky; top: 16px; } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; min-width: 0; }
+.panel h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+.field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+.field label { font-size: 0.82rem; font-weight: 600; }
+.field small { color: var(--muted); font-size: 0.76rem; }
+input[type=text], textarea {
+  width: 100%; font: 500 0.9rem var(--font-mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+}
+textarea { min-height: 150px; resize: vertical; line-height: 1.6; }
+input:focus-visible, textarea:focus-visible, button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+button {
+  font: 600 0.82rem var(--font-ui); border-radius: 6px; padding: 7px 11px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--fg);
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.check { display: flex; gap: 8px; align-items: center; font-size: 0.86rem; margin: 4px 0 0; }
+.errors { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 12px 14px; font-size: 0.88rem; }
+.errors ul { margin: 6px 0 0; padding-left: 18px; }
+.out { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.summary { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: baseline; }
+.summary b { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.summary span { color: var(--muted); font-size: 0.88rem; }
+.step-h { display: flex; gap: 10px; align-items: baseline; margin: 0 0 10px; }
+.step-h .n { font: 600 0.78rem var(--font-mono); background: var(--accent-soft); color: var(--accent); border-radius: 5px; padding: 2px 7px; }
+.step-h h3 { font-size: 1.02rem; margin: 0; }
+.panel p { margin: 0 0 10px; }
+.panel p:last-child { margin-bottom: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+.tw { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+td.m { font-family: var(--font-mono); font-size: 0.86rem; }
+tr:last-child td { border-bottom: 0; }
+.tag { display: inline-block; font: 600 0.7rem var(--font-ui); border-radius: 4px; padding: 1px 6px; margin-left: 6px; vertical-align: 1px; }
+.tag.new { background: var(--accent-soft); color: var(--accent); }
+.tag.acc { background: var(--good-soft); color: var(--good); }
+.tag.dead { background: var(--surface-2); color: var(--muted); }
+.state-block { border: 1px solid var(--line); border-radius: 8px; padding: 12px 12px 4px; margin-bottom: 10px; }
+.state-block:last-child { margin-bottom: 0; }
+.state-block h4 { margin: 0 0 6px; font-size: 0.92rem; }
+.diagram { overflow-x: auto; }
+.diagram svg { display: block; margin: 0 auto; width: 100%; height: auto; max-height: 560px; min-width: 320px; }
+svg text { font-family: var(--font-mono); }
+.n-circle { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+.n-ring { fill: none; stroke: var(--accent); stroke-width: 2; }
+.n-dead { stroke: var(--muted); stroke-dasharray: 4 3; }
+.n-label { fill: var(--fg); font-size: 12px; font-weight: 600; text-anchor: middle; dominant-baseline: central; }
+.e-path { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.e-label { fill: var(--fg); font-size: 12px; font-weight: 600; text-anchor: middle; dominant-baseline: central; paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.testbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+.testbar input { max-width: 260px; }
+.verdict { font-weight: 700; border-radius: 6px; padding: 3px 10px; font-size: 0.86rem; }
+.verdict.ok { background: var(--good-soft); color: var(--good); }
+.verdict.no { background: var(--bad-soft); color: var(--bad); }
+.trace { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-family: var(--font-mono); font-size: 0.86rem; }
+.chip { background: var(--surface-2); border-radius: 5px; padding: 2px 8px; }
+.chip.last { outline: 2px solid var(--accent); }
+.arrow { color: var(--muted); }
+.muted { color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) { button { transition: border-color 0.15s; } }
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <h1>NFA to DFA Converter</h1>
+  <p class="lede">Enter an NFA and get the equivalent DFA through subset construction. Every ε-closure, move and new state is shown, so the working can be followed line by line.</p>
+
+  <div class="layout">
+    <section class="panel panel-in" aria-label="NFA input">
+      <h2>Your NFA</h2>
+      <div class="presets" id="presets"></div>
+      <div class="field">
+        <label for="states">States</label>
+        <input type="text" id="states" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label for="alphabet">Alphabet</label>
+        <input type="text" id="alphabet" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="row2">
+        <div class="field">
+          <label for="start">Start state</label>
+          <input type="text" id="start" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="accepts">Accepting</label>
+          <input type="text" id="accepts" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div class="field">
+        <label for="trans">Transitions</label>
+        <textarea id="trans" spellcheck="false"></textarea>
+        <small>One per line: <code>q0, a -&gt; q0, q1</code>. For ε write <code>eps</code> (or ε).</small>
+      </div>
+      <div class="check"><input type="checkbox" id="rename" checked><label for="rename">Rename DFA states to A, B, C…</label></div>
+    </section>
+
+    <div class="out" id="out" aria-live="polite"></div>
+  </div>
+</div>
+
+<script>
+const EPS = 'eps';
+const SEP = '\u0000';
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+const PRESETS = [
+  { name: '(a|b)*abb', states: 'q0, q1, q2, q3', alphabet: 'a, b', start: 'q0', accepts: 'q3',
+    trans: 'q0, a -> q0, q1\nq0, b -> q0\nq1, b -> q2\nq2, b -> q3' },
+  { name: '2nd symbol from end is a', states: 'q0, q1, q2', alphabet: 'a, b', start: 'q0', accepts: 'q2',
+    trans: 'q0, a -> q0, q1\nq0, b -> q0\nq1, a -> q2\nq1, b -> q2' },
+  { name: 'a*b* with ε', states: 'q0, q1, q2', alphabet: 'a, b', start: 'q0', accepts: 'q2',
+    trans: 'q0, eps -> q1\nq1, a -> q1\nq1, eps -> q2\nq2, b -> q2' },
+  { name: 'contains 01', states: 'p, q, r', alphabet: '0, 1', start: 'p', accepts: 'r',
+    trans: 'p, 0 -> p, q\np, 1 -> p\nq, 1 -> r\nr, 0 -> r\nr, 1 -> r' }
+];
+
+function loadPreset(p) {
+  $('states').value = p.states; $('alphabet').value = p.alphabet; $('start').value = p.start;
+  $('accepts').value = p.accepts; $('trans').value = p.trans;
+  run();
+}
+
+/* ---------- parsing ---------- */
+const splitList = s => s.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+const normSym = x => (x === 'ε' || x === 'λ' || /^(eps|epsilon)$/i.test(x)) ? EPS : x;
+
+function parse() {
+  const errors = [];
+  const states = [...new Set(splitList($('states').value))];
+  const alphabet = [...new Set(splitList($('alphabet').value).filter(x => normSym(x) !== EPS))];
+  const start = $('start').value.trim();
+  const accepts = [...new Set(splitList($('accepts').value))];
+  const trans = {};
+  $('trans').value.split('\n').forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) return;
+    const m = line.match(/^([^,\s]+)\s*,\s*([^\s,]+)\s*(?:->|→|=>)\s*(.*)$/);
+    if (!m) { errors.push(`Line ${i + 1}: "${line}" should look like  q0, a -> q1, q2`); return; }
+    const from = m[1], sym = normSym(m[2]), targets = splitList(m[3]);
+    if (!states.includes(from)) errors.push(`Line ${i + 1}: state "${from}" is not in the state list.`);
+    if (sym !== EPS && !alphabet.includes(sym)) errors.push(`Line ${i + 1}: symbol "${sym}" is not in the alphabet.`);
+    targets.forEach(t => { if (!states.includes(t)) errors.push(`Line ${i + 1}: state "${t}" is not in the state list.`); });
+    const key = from + SEP + sym;
+    if (!trans[key]) trans[key] = new Set();
+    targets.forEach(t => trans[key].add(t));
+  });
+  if (!states.length) errors.push('Add at least one state.');
+  if (!alphabet.length) errors.push('Add at least one input symbol.');
+  if (!states.includes(start)) errors.push(`Start state "${start}" is not in the state list.`);
+  accepts.forEach(a => { if (!states.includes(a)) errors.push(`Accepting state "${a}" is not in the state list.`); });
+  return { errors: [...new Set(errors)], states, alphabet, start, accepts, trans };
+}
+
+/* ---------- algorithm ---------- */
+function closure(nfa, seed) {
+  const out = new Set(seed), stack = [...seed];
+  while (stack.length) {
+    const s = stack.pop();
+    (nfa.trans[s + SEP + EPS] || []).forEach(t => { if (!out.has(t)) { out.add(t); stack.push(t); } });
+  }
+  return out;
+}
+const sortSub = (nfa, set) => [...set].sort((a, b) => nfa.states.indexOf(a) - nfa.states.indexOf(b));
+const keyOf = arr => arr.join('\u0001');
+const setTxt = arr => arr.length ? '{' + arr.join(', ') + '}' : '∅';
+
+function convert(nfa) {
+  const hasEps = Object.keys(nfa.trans).some(k => k.endsWith(SEP + EPS));
+  const closures = nfa.states.map(s => ({ s, c: sortSub(nfa, closure(nfa, [s])) }));
+  const startSet = sortSub(nfa, closure(nfa, [nfa.start]));
+  const accSet = new Set(nfa.accepts);
+  const dfa = [], index = new Map(), steps = [];
+  const add = arr => {
+    const k = keyOf(arr);
+    if (index.has(k)) return false;
+    index.set(k, dfa.length);
+    dfa.push({ arr, trans: {} });
+    return true;
+  };
+  add(startSet);
+  for (let i = 0; i < dfa.length; i++) {
+    const rows = [];
+    for (const sym of nfa.alphabet) {
+      const mv = new Set();
+      dfa[i].arr.forEach(s => (nfa.trans[s + SEP + sym] || []).forEach(t => mv.add(t)));
+      const cl = sortSub(nfa, closure(nfa, mv));
+      const isNew = add(cl);
+      dfa[i].trans[sym] = index.get(keyOf(cl));
+      rows.push({ sym, mv: sortSub(nfa, mv), cl, isNew, to: index.get(keyOf(cl)) });
+    }
+    steps.push({ idx: i, rows });
+  }
+  const accepting = dfa.map(d => d.arr.some(s => accSet.has(s)));
+  return { hasEps, closures, startSet, dfa, steps, accepting };
+}
+
+function nfaAccepts(nfa, word) {
+  let cur = closure(nfa, [nfa.start]);
+  for (const ch of word) {
+    const mv = new Set();
+    cur.forEach(s => (nfa.trans[s + SEP + ch] || []).forEach(t => mv.add(t)));
+    cur = closure(nfa, mv);
+  }
+  return [...cur].some(s => nfa.accepts.includes(s));
+}
+
+/* ---------- rendering ---------- */
+function letter(i) { return i < 26 ? String.fromCharCode(65 + i) : 'S' + i; }
+
+function drawDiagram(model, lab) {
+  const { dfa, accepting } = model, n = dfa.length;
+  const labels = dfa.map((_, i) => lab(i));
+  const maxLen = Math.max(...labels.map(l => l.length));
+  const r = Math.max(22, maxLen * 3.6 + 12);
+  const R = n === 1 ? 0 : Math.max(r * 2.8, n * r * 0.95 + 40);
+  const pad = r + 78, W = 2 * (R + pad), cx = W / 2, cy = W / 2;
+  const pos = dfa.map((_, i) => {
+    if (n === 1) return { x: cx, y: cy, a: Math.PI };
+    const a = Math.PI + 2 * Math.PI * i / n;
+    return { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a), a };
+  });
+  const edges = new Map();
+  dfa.forEach((d, i) => Object.entries(d.trans).forEach(([sym, j]) => {
+    const k = i + '>' + j;
+    if (!edges.has(k)) edges.set(k, { i, j, syms: [] });
+    edges.get(k).syms.push(sym);
+  }));
+  let svg = `<svg viewBox="0 0 ${W.toFixed(0)} ${W.toFixed(0)}" role="img" aria-label="DFA state diagram"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted)"/></marker></defs>`;
+  let labelsSvg = '';
+  edges.forEach(e => {
+    const A = pos[e.i], B = pos[e.j], text = esc(e.syms.join(','));
+    if (e.i === e.j) {
+      const base = n === 1 ? -Math.PI / 2 : A.a + 1.0;
+      const a1 = base - 0.5, a2 = base + 0.5, ext = r + 54;
+      const p1 = [A.x + r * Math.cos(a1), A.y + r * Math.sin(a1)];
+      const p2 = [A.x + (r + 3) * Math.cos(a2), A.y + (r + 3) * Math.sin(a2)];
+      const c1 = [A.x + ext * Math.cos(a1 - 0.3), A.y + ext * Math.sin(a1 - 0.3)];
+      const c2 = [A.x + ext * Math.cos(a2 + 0.3), A.y + ext * Math.sin(a2 + 0.3)];
+      svg += `<path class="e-path" d="M${p1[0].toFixed(1)} ${p1[1].toFixed(1)} C${c1[0].toFixed(1)} ${c1[1].toFixed(1)} ${c2[0].toFixed(1)} ${c2[1].toFixed(1)} ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}" marker-end="url(#arr)"/>`;
+      labelsSvg += `<text class="e-label" x="${(A.x + (r + 50) * Math.cos(base)).toFixed(1)}" y="${(A.y + (r + 50) * Math.sin(base)).toFixed(1)}">${text}</text>`;
+      return;
+    }
+    const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy);
+    const px = -dy / len, py = dx / len;
+    const curve = edges.has(e.j + '>' + e.i) ? 30 : 0;
+    const mid = [(A.x + B.x) / 2, (A.y + B.y) / 2];
+    const ctrl = [mid[0] + px * curve, mid[1] + py * curve];
+    const ua = [ctrl[0] - A.x, ctrl[1] - A.y], la = Math.hypot(...ua);
+    const ub = [ctrl[0] - B.x, ctrl[1] - B.y], lb = Math.hypot(...ub);
+    const s = [A.x + ua[0] / la * r, A.y + ua[1] / la * r];
+    const t = [B.x + ub[0] / lb * (r + 3), B.y + ub[1] / lb * (r + 3)];
+    svg += `<path class="e-path" d="M${s[0].toFixed(1)} ${s[1].toFixed(1)} Q${ctrl[0].toFixed(1)} ${ctrl[1].toFixed(1)} ${t[0].toFixed(1)} ${t[1].toFixed(1)}" marker-end="url(#arr)"/>`;
+    const q = [0.25 * s[0] + 0.5 * ctrl[0] + 0.25 * t[0], 0.25 * s[1] + 0.5 * ctrl[1] + 0.25 * t[1]];
+    const off = curve ? 11 : 13;
+    labelsSvg += `<text class="e-label" x="${(q[0] + px * off).toFixed(1)}" y="${(q[1] + py * off).toFixed(1)}">${text}</text>`;
+  });
+  const S = pos[0];
+  const sa = n === 1 ? Math.PI : S.a;
+  svg += `<path class="e-path" d="M${(S.x + (r + 34) * Math.cos(sa)).toFixed(1)} ${(S.y + (r + 34) * Math.sin(sa)).toFixed(1)} L${(S.x + (r + 3) * Math.cos(sa)).toFixed(1)} ${(S.y + (r + 3) * Math.sin(sa)).toFixed(1)}" marker-end="url(#arr)"/>`;
+  dfa.forEach((d, i) => {
+    const p = pos[i], dead = d.arr.length === 0;
+    svg += `<circle class="n-circle${dead ? ' n-dead' : ''}" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r}"/>`;
+    if (accepting[i]) svg += `<circle class="n-ring" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${r - 5}"/>`;
+    svg += `<text class="n-label" x="${p.x.toFixed(1)}" y="${p.y.toFixed(1)}">${esc(labels[i])}</text>`;
+  });
+  return svg + labelsSvg + '</svg>';
+}
+
+let CURRENT = null;
+
+function run() {
+  const nfa = parse(), out = $('out');
+  if (nfa.errors.length) {
+    CURRENT = null;
+    out.innerHTML = `<div class="errors"><b>Check the NFA</b><ul>${nfa.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>`;
+    return;
+  }
+  const model = convert(nfa);
+  CURRENT = { nfa, model };
+  const rename = $('rename').checked;
+  const lab = i => rename ? letter(i) : (model.dfa[i].arr.length ? '{' + model.dfa[i].arr.join(',') + '}' : '∅');
+  const both = i => rename ? `${letter(i)} = ${setTxt(model.dfa[i].arr)}` : setTxt(model.dfa[i].arr);
+  let n = 0;
+  const head = t => `<div class="step-h"><span class="n">${++n}</span><h3>${t}</h3></div>`;
+  let h = '';
+
+  h += `<section class="panel"><div class="summary"><b>${nfa.states.length} → ${model.dfa.length}</b><span>NFA states → DFA states${model.dfa.length > Math.pow(2, nfa.states.length) ? '' : ` (worst case would be 2<sup>${nfa.states.length}</sup> = ${Math.pow(2, nfa.states.length)})`}</span></div></section>`;
+
+  if (model.hasEps) {
+    h += `<section class="panel">${head('ε-closure of every NFA state')}
+      <p>The ε-closure of a state is every state reachable from it using only ε-moves, including itself.</p>
+      <div class="tw"><table><thead><tr><th>State</th><th>ε-closure</th></tr></thead><tbody>
+      ${model.closures.map(c => `<tr><td class="m">${esc(c.s)}</td><td class="m">${esc(setTxt(c.c))}</td></tr>`).join('')}
+      </tbody></table></div></section>`;
+  }
+
+  h += `<section class="panel">${head('Start state of the DFA')}
+    <p>${model.hasEps ? `The start state is the ε-closure of <code>${esc(nfa.start)}</code>` : `The start state is just the NFA start state <code>${esc(nfa.start)}</code> (there are no ε-moves)`}:
+    <code>${esc(setTxt(model.startSet))}</code>${rename ? ', named <code>A</code>' : ''}.</p></section>`;
+
+  h += `<section class="panel">${head('Compute the transitions of each DFA state')}
+    <p>For a DFA state S and symbol x: take <code>move(S, x)</code>, the NFA states reachable by x from any member of S${model.hasEps ? ', then take its ε-closure' : ''}. If the result is new, it becomes a new DFA state and is processed later.</p>`;
+  model.steps.forEach(st => {
+    const d = model.dfa[st.idx];
+    h += `<div class="state-block"><h4 class="mono">State ${esc(both(st.idx))}${st.idx === 0 ? '<span class="tag new">start</span>' : ''}</h4><div class="tw"><table><thead><tr><th>Input</th><th>move(S, x)</th>${model.hasEps ? '<th>ε-closure</th>' : ''}<th>Goes to</th></tr></thead><tbody>`;
+    st.rows.forEach(r => {
+      h += `<tr><td class="m">${esc(r.sym)}</td><td class="m">${esc(setTxt(r.mv))}</td>${model.hasEps ? `<td class="m">${esc(setTxt(r.cl))}</td>` : ''}<td class="m">${esc(lab(r.to))}${r.cl.length === 0 ? '<span class="tag dead">dead</span>' : ''}${r.isNew ? '<span class="tag new">new</span>' : ''}</td></tr>`;
+    });
+    h += `</tbody></table></div></div>`;
+  });
+  h += `</section>`;
+
+  const accIdx = model.accepting.map((a, i) => a ? i : -1).filter(i => i >= 0);
+  h += `<section class="panel">${head('Accepting states')}
+    <p>A DFA state accepts when it contains at least one NFA accepting state (<code>${esc(setTxt(nfa.accepts))}</code>).
+    ${accIdx.length ? 'Accepting: ' + accIdx.map(i => `<code>${esc(both(i))}</code>`).join(', ') + '.' : 'No DFA state contains an accepting state, so this DFA accepts nothing.'}</p></section>`;
+
+  h += `<section class="panel">${head('The resulting DFA')}
+    <div class="tw"><table><thead><tr><th>State</th>${rename ? '<th>NFA states</th>' : ''}${nfa.alphabet.map(a => `<th>${esc(a)}</th>`).join('')}</tr></thead><tbody>`;
+  model.dfa.forEach((d, i) => {
+    h += `<tr><td class="m">${i === 0 ? '→ ' : ''}${model.accepting[i] ? '* ' : ''}${esc(lab(i))}${i === 0 ? '<span class="tag new">start</span>' : ''}${model.accepting[i] ? '<span class="tag acc">accept</span>' : ''}${d.arr.length === 0 ? '<span class="tag dead">dead</span>' : ''}</td>${rename ? `<td class="m">${esc(setTxt(d.arr))}</td>` : ''}${nfa.alphabet.map(a => `<td class="m">${esc(lab(d.trans[a]))}</td>`).join('')}</tr>`;
+  });
+  h += `</tbody></table></div>
+    <p class="muted" style="margin-top:10px">→ start state, * accepting state. In the diagram, a double circle is accepting and a dashed circle is the dead state.</p>
+    <div class="diagram">${drawDiagram(model, lab)}</div></section>`;
+
+  h += `<section class="panel">${head('Test a string')}
+    <div class="testbar"><input type="text" id="word" placeholder="e.g. abb (empty = ε)" autocomplete="off" spellcheck="false" aria-label="String to test"><button class="primary" id="testbtn" type="button">Run</button></div>
+    <div id="testout" class="muted">Type a string over the alphabet and press Run to follow it through the DFA.</div></section>`;
+
+  const prevWord = $('word') ? $('word').value : '';
+  out.innerHTML = h;
+  $('word').value = prevWord;
+  $('testbtn').onclick = test;
+  $('word').onkeydown = e => { if (e.key === 'Enter') test(); };
+  if (prevWord) test();
+}
+
+function test() {
+  if (!CURRENT) return;
+  const { nfa, model } = CURRENT, word = $('word').value.trim();
+  const rename = $('rename').checked;
+  const lab = i => rename ? letter(i) : (model.dfa[i].arr.length ? '{' + model.dfa[i].arr.join(',') + '}' : '∅');
+  const bad = [...word].find(ch => !nfa.alphabet.includes(ch));
+  const t = $('testout');
+  if (bad !== undefined) {
+    t.innerHTML = `<span class="verdict no">Reject</span> <span class="muted">"${esc(bad)}" is not in the alphabet.</span>`;
+    return;
+  }
+  let cur = 0;
+  const path = [cur];
+  const syms = [...word];
+  syms.forEach(ch => { cur = model.dfa[cur].trans[ch]; path.push(cur); });
+  const ok = model.accepting[cur];
+  const nfaOk = nfaAccepts(nfa, word);
+  let h = `<div class="testbar"><span class="verdict ${ok ? 'ok' : 'no'}">${ok ? 'Accept' : 'Reject'}</span><span class="muted">${ok ? 'The final state is accepting.' : 'The final state is not accepting.'}</span></div><div class="trace">`;
+  path.forEach((s, i) => {
+    h += `<span class="chip${i === path.length - 1 ? ' last' : ''}">${esc(lab(s))}</span>`;
+    if (i < syms.length) h += `<span class="arrow">—${esc(syms[i])}→</span>`;
+  });
+  h += `</div><p class="muted" style="margin-top:12px">Check against the original NFA: ${nfaOk ? 'accepts' : 'rejects'} this string too${nfaOk === ok ? ', so both machines agree.' : '. They disagree, so something is wrong.'}</p>`;
+  t.innerHTML = h;
+}
+
+/* ---------- wiring ---------- */
+PRESETS.forEach(p => {
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = p.name;
+  b.onclick = () => loadPreset(p);
+  $('presets').appendChild(b);
+});
+['states', 'alphabet', 'start', 'accepts', 'trans'].forEach(id => $(id).addEventListener('input', run));
+$('rename').addEventListener('change', run);
+loadPreset(PRESETS[0]);
+</script>
+
+</body>
+</html>
