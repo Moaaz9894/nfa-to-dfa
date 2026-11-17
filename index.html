@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NFA to DFA Converter</title>
+<title>Regex to DFA Converter</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <style>
 /* Layout: input panel on the left, worked solution on the right; stacks on phones. */
@@ -118,40 +118,26 @@ svg text { font-family: var(--font-mono); }
 </style>
 </head>
 <body>
-
-
 <div class="wrap">
-  <h1>NFA to DFA Converter</h1>
-  <p class="lede">Enter an NFA and get the equivalent DFA through subset construction. Every ε-closure, move and new state is shown, so the working can be followed line by line.</p>
+  <h1>Regex → NFA → DFA Converter</h1>
+  <p class="lede">Type a regular expression over the binary alphabet {0, 1}. The page builds the NFA with Thompson's construction, converts it to a DFA with subset construction, and prints both 5-tuples with every step.</p>
 
   <div class="layout">
-    <section class="panel panel-in" aria-label="NFA input">
-      <h2>Your NFA</h2>
+    <section class="panel panel-in" aria-label="Regular expression input">
+      <h2>Regular expression</h2>
       <div class="presets" id="presets"></div>
       <div class="field">
-        <label for="states">States</label>
-        <input type="text" id="states" autocomplete="off" spellcheck="false">
+        <label for="rx">Expression</label>
+        <input type="text" id="rx" autocomplete="off" spellcheck="false">
+        <small>Symbols 0 and 1 only. Operators: <code>( )</code> <code>|</code> <code>*</code> <code>+</code>. Concatenation is implicit, e.g. <code>01</code>.</small>
       </div>
       <div class="field">
-        <label for="alphabet">Alphabet</label>
-        <input type="text" id="alphabet" autocomplete="off" spellcheck="false">
+        <label for="tests">Test strings</label>
+        <input type="text" id="tests" autocomplete="off" spellcheck="false">
+        <small>Comma separated. Write ε or leave an item empty for the empty string.</small>
       </div>
-      <div class="row2">
-        <div class="field">
-          <label for="start">Start state</label>
-          <input type="text" id="start" autocomplete="off" spellcheck="false">
-        </div>
-        <div class="field">
-          <label for="accepts">Accepting</label>
-          <input type="text" id="accepts" autocomplete="off" spellcheck="false">
-        </div>
-      </div>
-      <div class="field">
-        <label for="trans">Transitions</label>
-        <textarea id="trans" spellcheck="false"></textarea>
-        <small>One per line: <code>q0, a -&gt; q0, q1</code>. For ε write <code>eps</code> (or ε).</small>
-      </div>
-      <div class="check"><input type="checkbox" id="rename" checked><label for="rename">Rename DFA states to A, B, C…</label></div>
+      <h2 style="margin-top:16px">Invalid inputs to try</h2>
+      <div class="presets" id="bad"></div>
     </section>
 
     <div class="out" id="out" aria-live="polite"></div>
@@ -159,120 +145,180 @@ svg text { font-family: var(--font-mono); }
 </div>
 
 <script>
-const EPS = 'eps';
-const SEP = '\u0000';
+const EPS = 'eps', SIGMA = ['0', '1'];
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-const PRESETS = [
-  { name: '(a|b)*abb', states: 'q0, q1, q2, q3', alphabet: 'a, b', start: 'q0', accepts: 'q3',
-    trans: 'q0, a -> q0, q1\nq0, b -> q0\nq1, b -> q2\nq2, b -> q3' },
-  { name: '2nd symbol from end is a', states: 'q0, q1, q2', alphabet: 'a, b', start: 'q0', accepts: 'q2',
-    trans: 'q0, a -> q0, q1\nq0, b -> q0\nq1, a -> q2\nq1, b -> q2' },
-  { name: 'a*b* with ε', states: 'q0, q1, q2', alphabet: 'a, b', start: 'q0', accepts: 'q2',
-    trans: 'q0, eps -> q1\nq1, a -> q1\nq1, eps -> q2\nq2, b -> q2' },
-  { name: 'contains 01', states: 'p, q, r', alphabet: '0, 1', start: 'p', accepts: 'r',
-    trans: 'p, 0 -> p, q\np, 1 -> p\nq, 1 -> r\nr, 0 -> r\nr, 1 -> r' }
-];
+const SUITE = ['0', '01', '0|1', '0*', '1+', '(0|1)*011', '0(0|1)*1', '(0|1)*', '(01)+'];
+const BAD = ['a', '012', '0|', '*0', '(01', '01)'];
+const DEFAULT_TESTS = 'ε, 0, 1, 011, 1011, 0110, 11';
 
-function loadPreset(p) {
-  $('states').value = p.states; $('alphabet').value = p.alphabet; $('start').value = p.start;
-  $('accepts').value = p.accepts; $('trans').value = p.trans;
-  run();
+class RegexError extends Error {}
+
+/* ---------- validation + recursive-descent parser ---------- */
+function validate(rx) {
+  if (rx === '') throw new RegexError('Error: empty regular expression.');
+  for (let i = 0; i < rx.length; i++) {
+    if (!'01()|*+'.includes(rx[i]))
+      throw new RegexError(`Error: invalid symbol '${rx[i]}' at position ${i}; alphabet is restricted to {0, 1}.`);
+  }
 }
 
-/* ---------- parsing ---------- */
-const splitList = s => s.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
-const normSym = x => (x === 'ε' || x === 'λ' || /^(eps|epsilon)$/i.test(x)) ? EPS : x;
+function parseRegex(s) {
+  let i = 0;
+  const peek = () => (i < s.length ? s[i] : null);
+  function union(after) {
+    let node = concat(after);
+    while (peek() === '|') { const pos = i; i++; node = ['alt', node, concat(['|', pos])]; }
+    return node;
+  }
+  function concat(after) {
+    let node = postfix(after);
+    while (peek() !== null && '01('.includes(peek())) node = ['cat', node, postfix(null)];
+    return node;
+  }
+  function postfix(after) {
+    let node = atom(after);
+    while (peek() === '*' || peek() === '+') { node = [peek() === '*' ? 'star' : 'plus', node]; i++; }
+    return node;
+  }
+  function atom(after) {
+    const c = peek();
+    if (c === '0' || c === '1') { i++; return ['sym', c]; }
+    if (c === '(') {
+      const start = i; i++;
+      const node = union(['(', start]);
+      if (peek() !== ')') throw new RegexError(`Error: missing ')' for '(' at position ${start}.`);
+      i++; return node;
+    }
+    if (after) {
+      const [op, pos] = after;
+      if (op === '(') throw new RegexError(`Error: empty or incomplete group after '(' at position ${pos}.`);
+      throw new RegexError(`Error: dangling operator '${op}' at position ${pos}: missing operand.`);
+    }
+    if (c === null) throw new RegexError('Error: unexpected end of expression.');
+    if (c === '*' || c === '+') throw new RegexError(`Error: operator '${c}' at position ${i} has nothing to repeat.`);
+    throw new RegexError(`Error: unexpected '${c}' at position ${i}; expected '0', '1' or '('.`);
+  }
+  const node = union(null);
+  if (i < s.length) throw new RegexError(`Error: unmatched ')' at position ${i}.`);
+  return node;
+}
 
-function parse() {
-  const errors = [];
-  const states = [...new Set(splitList($('states').value))];
-  const alphabet = [...new Set(splitList($('alphabet').value).filter(x => normSym(x) !== EPS))];
-  const start = $('start').value.trim();
-  const accepts = [...new Set(splitList($('accepts').value))];
-  const trans = {};
-  $('trans').value.split('\n').forEach((raw, i) => {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) return;
-    const m = line.match(/^([^,\s]+)\s*,\s*([^\s,]+)\s*(?:->|→|=>)\s*(.*)$/);
-    if (!m) { errors.push(`Line ${i + 1}: "${line}" should look like  q0, a -> q1, q2`); return; }
-    const from = m[1], sym = normSym(m[2]), targets = splitList(m[3]);
-    if (!states.includes(from)) errors.push(`Line ${i + 1}: state "${from}" is not in the state list.`);
-    if (sym !== EPS && !alphabet.includes(sym)) errors.push(`Line ${i + 1}: symbol "${sym}" is not in the alphabet.`);
-    targets.forEach(t => { if (!states.includes(t)) errors.push(`Line ${i + 1}: state "${t}" is not in the state list.`); });
-    const key = from + SEP + sym;
-    if (!trans[key]) trans[key] = new Set();
-    targets.forEach(t => trans[key].add(t));
+function show(n, p = 0) {
+  switch (n[0]) {
+    case 'sym': return n[1];
+    case 'cat': { const t = show(n[1], 1) + show(n[2], 1); return p >= 2 ? '(' + t + ')' : t; }
+    case 'alt': { const t = show(n[1], 0) + '|' + show(n[2], 0); return p >= 1 ? '(' + t + ')' : t; }
+    case 'star': return show(n[1], 2) + '*';
+    default: return show(n[1], 2) + '+';
+  }
+}
+
+/* ---------- Thompson's construction ---------- */
+function thompson(ast) {
+  const delta = [], log = [];
+  const ns = () => { delta.push({}); return delta.length - 1; };
+  const add = (a, sym, b) => { (delta[a][sym] = delta[a][sym] || new Set()).add(b); };
+  function build(node) {
+    const k = node[0];
+    let s, f, rule;
+    if (k === 'sym') {
+      s = ns(); f = ns(); add(s, node[1], f); rule = `Symbol ${node[1]}`;
+    } else if (k === 'cat') {
+      const [s1, f1] = build(node[1]); const [s2, f2] = build(node[2]);
+      add(f1, EPS, s2); s = s1; f = f2; rule = 'Concatenation';
+    } else if (k === 'alt') {
+      const [s1, f1] = build(node[1]); const [s2, f2] = build(node[2]);
+      s = ns(); f = ns();
+      add(s, EPS, s1); add(s, EPS, s2); add(f1, EPS, f); add(f2, EPS, f); rule = 'Union';
+    } else if (k === 'star') {
+      const [s1, f1] = build(node[1]); s = ns(); f = ns();
+      add(s, EPS, s1); add(s, EPS, f); add(f1, EPS, s1); add(f1, EPS, f); rule = 'Kleene star';
+    } else {
+      const [s1, f1] = build(node[1]); s = ns(); f = ns();
+      add(s, EPS, s1); add(f1, EPS, s1); add(f1, EPS, f); rule = 'Plus (star rule without s→f)';
+    }
+    log.push({ rule, sub: show(node), s, f });
+    return [s, f];
+  }
+  const [start, accept] = build(ast);
+  // renumber in BFS order so that q0 = 0
+  const order = [], seen = new Set([start]), queue = [start];
+  while (queue.length) {
+    const s = queue.shift(); order.push(s);
+    for (const sym of [EPS, ...SIGMA])
+      [...(delta[s][sym] || [])].sort((a, b) => a - b).forEach(t => { if (!seen.has(t)) { seen.add(t); queue.push(t); } });
+  }
+  const mp = new Map(order.map((o, n) => [o, n]));
+  const nd = order.map(o => {
+    const row = {};
+    for (const [sym, ts] of Object.entries(delta[o])) row[sym] = new Set([...ts].map(t => mp.get(t)));
+    return row;
   });
-  if (!states.length) errors.push('Add at least one state.');
-  if (!alphabet.length) errors.push('Add at least one input symbol.');
-  if (!states.includes(start)) errors.push(`Start state "${start}" is not in the state list.`);
-  accepts.forEach(a => { if (!states.includes(a)) errors.push(`Accepting state "${a}" is not in the state list.`); });
-  return { errors: [...new Set(errors)], states, alphabet, start, accepts, trans };
+  return {
+    count: order.length, delta: nd, start: mp.get(start), accept: mp.get(accept),
+    log: log.map(l => ({ ...l, s: mp.get(l.s), f: mp.get(l.f) }))
+  };
 }
 
-/* ---------- algorithm ---------- */
+/* ---------- subset construction ---------- */
 function closure(nfa, seed) {
   const out = new Set(seed), stack = [...seed];
   while (stack.length) {
     const s = stack.pop();
-    (nfa.trans[s + SEP + EPS] || []).forEach(t => { if (!out.has(t)) { out.add(t); stack.push(t); } });
+    (nfa.delta[s][EPS] || []).forEach(t => { if (!out.has(t)) { out.add(t); stack.push(t); } });
   }
   return out;
 }
-const sortSub = (nfa, set) => [...set].sort((a, b) => nfa.states.indexOf(a) - nfa.states.indexOf(b));
-const keyOf = arr => arr.join('\u0001');
-const setTxt = arr => arr.length ? '{' + arr.join(', ') + '}' : '∅';
+const sorted = set => [...set].sort((a, b) => a - b);
+const setTxt = arr => '{' + arr.join(', ') + '}';
 
-function convert(nfa) {
-  const hasEps = Object.keys(nfa.trans).some(k => k.endsWith(SEP + EPS));
-  const closures = nfa.states.map(s => ({ s, c: sortSub(nfa, closure(nfa, [s])) }));
-  const startSet = sortSub(nfa, closure(nfa, [nfa.start]));
-  const accSet = new Set(nfa.accepts);
+function subsetConstruction(nfa) {
+  const startSet = sorted(closure(nfa, [nfa.start]));
   const dfa = [], index = new Map(), steps = [];
+  const key = a => a.join(',');
   const add = arr => {
-    const k = keyOf(arr);
-    if (index.has(k)) return false;
-    index.set(k, dfa.length);
-    dfa.push({ arr, trans: {} });
-    return true;
+    if (index.has(key(arr))) return false;
+    index.set(key(arr), dfa.length); dfa.push({ arr, trans: {} }); return true;
   };
   add(startSet);
   for (let i = 0; i < dfa.length; i++) {
     const rows = [];
-    for (const sym of nfa.alphabet) {
+    for (const sym of SIGMA) {
       const mv = new Set();
-      dfa[i].arr.forEach(s => (nfa.trans[s + SEP + sym] || []).forEach(t => mv.add(t)));
-      const cl = sortSub(nfa, closure(nfa, mv));
-      const isNew = add(cl);
-      dfa[i].trans[sym] = index.get(keyOf(cl));
-      rows.push({ sym, mv: sortSub(nfa, mv), cl, isNew, to: index.get(keyOf(cl)) });
+      dfa[i].arr.forEach(s => (nfa.delta[s][sym] || []).forEach(t => mv.add(t)));
+      const cl = sorted(closure(nfa, mv));
+      const isNew = add(cl), to = index.get(key(cl));
+      dfa[i].trans[sym] = to;
+      rows.push({ sym, mv: sorted(mv), cl, isNew, to });
     }
     steps.push({ idx: i, rows });
   }
-  const accepting = dfa.map(d => d.arr.some(s => accSet.has(s)));
-  return { hasEps, closures, startSet, dfa, steps, accepting };
+  const accepting = dfa.map(d => d.arr.includes(nfa.accept));
+  return { startSet, dfa, steps, accepting };
 }
 
-function nfaAccepts(nfa, word) {
+function nfaAccepts(nfa, w) {
   let cur = closure(nfa, [nfa.start]);
-  for (const ch of word) {
+  for (const ch of w) {
     const mv = new Set();
-    cur.forEach(s => (nfa.trans[s + SEP + ch] || []).forEach(t => mv.add(t)));
+    cur.forEach(s => (nfa.delta[s][ch] || []).forEach(t => mv.add(t)));
     cur = closure(nfa, mv);
   }
-  return [...cur].some(s => nfa.accepts.includes(s));
+  return cur.has(nfa.accept);
+}
+function dfaAccepts(model, w) {
+  let s = 0;
+  for (const ch of w) s = model.dfa[s].trans[ch];
+  return model.accepting[s];
 }
 
-/* ---------- rendering ---------- */
-function letter(i) { return i < 26 ? String.fromCharCode(65 + i) : 'S' + i; }
-
+/* ---------- DFA diagram ---------- */
 function drawDiagram(model, lab) {
   const { dfa, accepting } = model, n = dfa.length;
   const labels = dfa.map((_, i) => lab(i));
-  const maxLen = Math.max(...labels.map(l => l.length));
-  const r = Math.max(22, maxLen * 3.6 + 12);
+  const r = 24;
   const R = n === 1 ? 0 : Math.max(r * 2.8, n * r * 0.95 + 40);
   const pad = r + 78, W = 2 * (R + pad), cx = W / 2, cy = W / 2;
   const pos = dfa.map((_, i) => {
@@ -315,8 +361,7 @@ function drawDiagram(model, lab) {
     const off = curve ? 11 : 13;
     labelsSvg += `<text class="e-label" x="${(q[0] + px * off).toFixed(1)}" y="${(q[1] + py * off).toFixed(1)}">${text}</text>`;
   });
-  const S = pos[0];
-  const sa = n === 1 ? Math.PI : S.a;
+  const S = pos[0], sa = n === 1 ? Math.PI : S.a;
   svg += `<path class="e-path" d="M${(S.x + (r + 34) * Math.cos(sa)).toFixed(1)} ${(S.y + (r + 34) * Math.sin(sa)).toFixed(1)} L${(S.x + (r + 3) * Math.cos(sa)).toFixed(1)} ${(S.y + (r + 3) * Math.sin(sa)).toFixed(1)}" marker-end="url(#arr)"/>`;
   dfa.forEach((d, i) => {
     const p = pos[i], dead = d.arr.length === 0;
@@ -327,113 +372,102 @@ function drawDiagram(model, lab) {
   return svg + labelsSvg + '</svg>';
 }
 
-let CURRENT = null;
+/* ---------- rendering ---------- */
+function parseTests(txt) {
+  return txt.split(',').map(x => x.trim()).map(x => (x === 'ε' || x === 'eps' || x === '""' ? '' : x));
+}
 
 function run() {
-  const nfa = parse(), out = $('out');
-  if (nfa.errors.length) {
-    CURRENT = null;
-    out.innerHTML = `<div class="errors"><b>Check the NFA</b><ul>${nfa.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>`;
+  const out = $('out'), rx = $('rx').value.trim();
+  let nfa, ast, model;
+  try {
+    validate(rx);
+    ast = parseRegex(rx);
+    nfa = thompson(ast);
+    model = subsetConstruction(nfa);
+  } catch (e) {
+    if (!(e instanceof RegexError)) throw e;
+    out.innerHTML = `<div class="errors"><b>Input rejected</b><ul><li class="mono">${esc(e.message)}</li></ul></div>`;
     return;
   }
-  const model = convert(nfa);
-  CURRENT = { nfa, model };
-  const rename = $('rename').checked;
-  const lab = i => rename ? letter(i) : (model.dfa[i].arr.length ? '{' + model.dfa[i].arr.join(',') + '}' : '∅');
-  const both = i => rename ? `${letter(i)} = ${setTxt(model.dfa[i].arr)}` : setTxt(model.dfa[i].arr);
+  const lab = i => 'D' + i;
+  const { dfa, accepting } = model;
   let n = 0;
   const head = t => `<div class="step-h"><span class="n">${++n}</span><h3>${t}</h3></div>`;
+  const nfaStates = Array.from({ length: nfa.count }, (_, i) => i);
   let h = '';
 
-  h += `<section class="panel"><div class="summary"><b>${nfa.states.length} → ${model.dfa.length}</b><span>NFA states → DFA states${model.dfa.length > Math.pow(2, nfa.states.length) ? '' : ` (worst case would be 2<sup>${nfa.states.length}</sup> = ${Math.pow(2, nfa.states.length)})`}</span></div></section>`;
+  h += `<section class="panel"><div class="summary"><b>${nfa.count} → ${dfa.length}</b><span>NFA states → DFA states for <code>${esc(rx)}</code></span></div></section>`;
 
-  if (model.hasEps) {
-    h += `<section class="panel">${head('ε-closure of every NFA state')}
-      <p>The ε-closure of a state is every state reachable from it using only ε-moves, including itself.</p>
-      <div class="tw"><table><thead><tr><th>State</th><th>ε-closure</th></tr></thead><tbody>
-      ${model.closures.map(c => `<tr><td class="m">${esc(c.s)}</td><td class="m">${esc(setTxt(c.c))}</td></tr>`).join('')}
-      </tbody></table></div></section>`;
-  }
+  h += `<section class="panel">${head('Parse the expression')}
+    <p>The input uses only 0, 1 and the operators <code>( ) | * +</code>. Precedence is <code>* +</code> first, then concatenation, then <code>|</code>. The parser reads it as:</p>
+    <p class="mono">${esc(show(ast))}</p></section>`;
+
+  h += `<section class="panel">${head("Thompson's construction, bottom-up")}
+    <p>Each sub-expression becomes a fragment with one start and one accept state. States are numbered in the order they are reached from the start state.</p>
+    <div class="tw"><table><thead><tr><th>Sub-expression</th><th>Rule</th><th>Start</th><th>Accept</th></tr></thead><tbody>
+    ${nfa.log.map(l => `<tr><td class="m">${esc(l.sub)}</td><td>${esc(l.rule)}</td><td class="m">${l.s}</td><td class="m">${l.f}</td></tr>`).join('')}
+    </tbody></table></div></section>`;
+
+  h += `<section class="panel">${head('NFA 5-tuple')}
+    <p class="mono">Q = ${setTxt(nfaStates)}<br>Σ = {0, 1}<br>q0 = ${nfa.start}<br>F = {${nfa.accept}}</p>
+    <p>δ (blank means no transition):</p>
+    <div class="tw"><table><thead><tr><th>State</th><th>ε</th><th>0</th><th>1</th></tr></thead><tbody>
+    ${nfaStates.map(s => `<tr><td class="m">${s === nfa.start ? '→ ' : ''}${s === nfa.accept ? '* ' : ''}${s}</td>${[EPS, '0', '1'].map(sym => `<td class="m">${nfa.delta[s][sym] ? esc(setTxt(sorted(nfa.delta[s][sym]))) : ''}</td>`).join('')}</tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted" style="margin-top:10px">→ start state, * accepting state.</p></section>`;
 
   h += `<section class="panel">${head('Start state of the DFA')}
-    <p>${model.hasEps ? `The start state is the ε-closure of <code>${esc(nfa.start)}</code>` : `The start state is just the NFA start state <code>${esc(nfa.start)}</code> (there are no ε-moves)`}:
-    <code>${esc(setTxt(model.startSet))}</code>${rename ? ', named <code>A</code>' : ''}.</p></section>`;
+    <p><code>D0</code> = ε-closure of the NFA start state <code>${nfa.start}</code> = <code>${esc(setTxt(model.startSet))}</code>.</p></section>`;
 
-  h += `<section class="panel">${head('Compute the transitions of each DFA state')}
-    <p>For a DFA state S and symbol x: take <code>move(S, x)</code>, the NFA states reachable by x from any member of S${model.hasEps ? ', then take its ε-closure' : ''}. If the result is new, it becomes a new DFA state and is processed later.</p>`;
+  h += `<section class="panel">${head('Subset construction, state by state')}
+    <p>For each DFA state T and each symbol a in the fixed order 0, 1: compute <code>move(T, a)</code>, then its ε-closure. A new set becomes a new DFA state. An empty set becomes the dead state ∅, so every state has exactly two transitions.</p>`;
   model.steps.forEach(st => {
-    const d = model.dfa[st.idx];
-    h += `<div class="state-block"><h4 class="mono">State ${esc(both(st.idx))}${st.idx === 0 ? '<span class="tag new">start</span>' : ''}</h4><div class="tw"><table><thead><tr><th>Input</th><th>move(S, x)</th>${model.hasEps ? '<th>ε-closure</th>' : ''}<th>Goes to</th></tr></thead><tbody>`;
-    st.rows.forEach(r => {
-      h += `<tr><td class="m">${esc(r.sym)}</td><td class="m">${esc(setTxt(r.mv))}</td>${model.hasEps ? `<td class="m">${esc(setTxt(r.cl))}</td>` : ''}<td class="m">${esc(lab(r.to))}${r.cl.length === 0 ? '<span class="tag dead">dead</span>' : ''}${r.isNew ? '<span class="tag new">new</span>' : ''}</td></tr>`;
-    });
-    h += `</tbody></table></div></div>`;
+    h += `<div class="state-block"><h4 class="mono">D${st.idx} = ${esc(setTxt(dfa[st.idx].arr))}${st.idx === 0 ? '<span class="tag new">start</span>' : ''}${accepting[st.idx] ? '<span class="tag acc">accept</span>' : ''}${dfa[st.idx].arr.length === 0 ? '<span class="tag dead">dead</span>' : ''}</h4>
+    <div class="tw"><table><thead><tr><th>Input</th><th>move(T, a)</th><th>ε-closure</th><th>Goes to</th></tr></thead><tbody>
+    ${st.rows.map(r => `<tr><td class="m">${r.sym}</td><td class="m">${esc(setTxt(r.mv))}</td><td class="m">${esc(setTxt(r.cl))}</td><td class="m">${lab(r.to)}${r.cl.length === 0 ? '<span class="tag dead">dead</span>' : ''}${r.isNew ? '<span class="tag new">new</span>' : ''}</td></tr>`).join('')}
+    </tbody></table></div></div>`;
   });
   h += `</section>`;
 
-  const accIdx = model.accepting.map((a, i) => a ? i : -1).filter(i => i >= 0);
-  h += `<section class="panel">${head('Accepting states')}
-    <p>A DFA state accepts when it contains at least one NFA accepting state (<code>${esc(setTxt(nfa.accepts))}</code>).
-    ${accIdx.length ? 'Accepting: ' + accIdx.map(i => `<code>${esc(both(i))}</code>`).join(', ') + '.' : 'No DFA state contains an accepting state, so this DFA accepts nothing.'}</p></section>`;
-
-  h += `<section class="panel">${head('The resulting DFA')}
-    <div class="tw"><table><thead><tr><th>State</th>${rename ? '<th>NFA states</th>' : ''}${nfa.alphabet.map(a => `<th>${esc(a)}</th>`).join('')}</tr></thead><tbody>`;
-  model.dfa.forEach((d, i) => {
-    h += `<tr><td class="m">${i === 0 ? '→ ' : ''}${model.accepting[i] ? '* ' : ''}${esc(lab(i))}${i === 0 ? '<span class="tag new">start</span>' : ''}${model.accepting[i] ? '<span class="tag acc">accept</span>' : ''}${d.arr.length === 0 ? '<span class="tag dead">dead</span>' : ''}</td>${rename ? `<td class="m">${esc(setTxt(d.arr))}</td>` : ''}${nfa.alphabet.map(a => `<td class="m">${esc(lab(d.trans[a]))}</td>`).join('')}</tr>`;
-  });
-  h += `</tbody></table></div>
-    <p class="muted" style="margin-top:10px">→ start state, * accepting state. In the diagram, a double circle is accepting and a dashed circle is the dead state.</p>
+  const acc = accepting.map((a, i) => a ? lab(i) : null).filter(Boolean);
+  h += `<section class="panel">${head('DFA 5-tuple')}
+    <p class="mono">Q = {${dfa.map((_, i) => lab(i)).join(', ')}}<br>Σ = {0, 1}<br>q0 = D0<br>F = {${acc.join(', ')}}</p>
+    <p>A DFA state is accepting when it contains the NFA accept state <code>${nfa.accept}</code>.</p>
+    <div class="tw"><table><thead><tr><th>State</th><th>NFA states</th><th>0</th><th>1</th></tr></thead><tbody>
+    ${dfa.map((d, i) => `<tr><td class="m">${i === 0 ? '→ ' : ''}${accepting[i] ? '* ' : ''}${lab(i)}${d.arr.length === 0 ? '<span class="tag dead">dead</span>' : ''}</td><td class="m">${esc(setTxt(d.arr))}</td><td class="m">${lab(d.trans['0'])}</td><td class="m">${lab(d.trans['1'])}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="muted" style="margin-top:10px"><b>Convention:</b> the DFA is total. Undefined moves go to an explicit dead state ∅, which is created only when needed. In the diagram a double circle is accepting and a dashed circle is the dead state.</p>
     <div class="diagram">${drawDiagram(model, lab)}</div></section>`;
 
-  h += `<section class="panel">${head('Test a string')}
-    <div class="testbar"><input type="text" id="word" placeholder="e.g. abb (empty = ε)" autocomplete="off" spellcheck="false" aria-label="String to test"><button class="primary" id="testbtn" type="button">Run</button></div>
-    <div id="testout" class="muted">Type a string over the alphabet and press Run to follow it through the DFA.</div></section>`;
+  const tests = parseTests($('tests').value);
+  h += `<section class="panel">${head('Check that NFA and DFA accept the same language')}
+    <div class="tw"><table><thead><tr><th>String</th><th>NFA</th><th>DFA</th><th>Agree</th></tr></thead><tbody>
+    ${tests.map(w => {
+      if ([...w].some(c => c !== '0' && c !== '1'))
+        return `<tr><td class="m">${esc(w)}</td><td colspan="3" class="muted">Not a binary string.</td></tr>`;
+      const a = nfaAccepts(nfa, w), b = dfaAccepts(model, w);
+      return `<tr><td class="m">${w === '' ? 'ε (empty)' : esc(w)}</td><td><span class="verdict ${a ? 'ok' : 'no'}">${a ? 'accept' : 'reject'}</span></td><td><span class="verdict ${b ? 'ok' : 'no'}">${b ? 'accept' : 'reject'}</span></td><td>${a === b ? '✓' : '✗ mismatch'}</td></tr>`;
+    }).join('')}
+    </tbody></table></div></section>`;
 
-  const prevWord = $('word') ? $('word').value : '';
   out.innerHTML = h;
-  $('word').value = prevWord;
-  $('testbtn').onclick = test;
-  $('word').onkeydown = e => { if (e.key === 'Enter') test(); };
-  if (prevWord) test();
-}
-
-function test() {
-  if (!CURRENT) return;
-  const { nfa, model } = CURRENT, word = $('word').value.trim();
-  const rename = $('rename').checked;
-  const lab = i => rename ? letter(i) : (model.dfa[i].arr.length ? '{' + model.dfa[i].arr.join(',') + '}' : '∅');
-  const bad = [...word].find(ch => !nfa.alphabet.includes(ch));
-  const t = $('testout');
-  if (bad !== undefined) {
-    t.innerHTML = `<span class="verdict no">Reject</span> <span class="muted">"${esc(bad)}" is not in the alphabet.</span>`;
-    return;
-  }
-  let cur = 0;
-  const path = [cur];
-  const syms = [...word];
-  syms.forEach(ch => { cur = model.dfa[cur].trans[ch]; path.push(cur); });
-  const ok = model.accepting[cur];
-  const nfaOk = nfaAccepts(nfa, word);
-  let h = `<div class="testbar"><span class="verdict ${ok ? 'ok' : 'no'}">${ok ? 'Accept' : 'Reject'}</span><span class="muted">${ok ? 'The final state is accepting.' : 'The final state is not accepting.'}</span></div><div class="trace">`;
-  path.forEach((s, i) => {
-    h += `<span class="chip${i === path.length - 1 ? ' last' : ''}">${esc(lab(s))}</span>`;
-    if (i < syms.length) h += `<span class="arrow">—${esc(syms[i])}→</span>`;
-  });
-  h += `</div><p class="muted" style="margin-top:12px">Check against the original NFA: ${nfaOk ? 'accepts' : 'rejects'} this string too${nfaOk === ok ? ', so both machines agree.' : '. They disagree, so something is wrong.'}</p>`;
-  t.innerHTML = h;
 }
 
 /* ---------- wiring ---------- */
-PRESETS.forEach(p => {
+function chip(host, text) {
   const b = document.createElement('button');
-  b.type = 'button'; b.textContent = p.name;
-  b.onclick = () => loadPreset(p);
-  $('presets').appendChild(b);
-});
-['states', 'alphabet', 'start', 'accepts', 'trans'].forEach(id => $(id).addEventListener('input', run));
-$('rename').addEventListener('change', run);
-loadPreset(PRESETS[0]);
+  b.type = 'button'; b.textContent = text; b.className = 'mono';
+  b.onclick = () => { $('rx').value = text; run(); };
+  $(host).appendChild(b);
+}
+SUITE.forEach(t => chip('presets', t));
+BAD.forEach(t => chip('bad', t));
+$('rx').addEventListener('input', run);
+$('tests').addEventListener('input', run);
+$('rx').value = '(0|1)*011';
+$('tests').value = DEFAULT_TESTS;
+run();
 </script>
-
 </body>
 </html>
